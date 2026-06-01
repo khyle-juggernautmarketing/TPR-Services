@@ -1,5 +1,4 @@
 import type { NextConfig } from 'next'
-import path from 'path'
 
 const securityHeaders = [
   { key: 'X-DNS-Prefetch-Control', value: 'on' },
@@ -28,7 +27,6 @@ const securityHeaders = [
 ]
 
 const nextConfig: NextConfig = {
-  outputFileTracingRoot: path.join(__dirname),
   poweredByHeader: false,
   images: {
     formats: ['image/avif', 'image/webp'],
