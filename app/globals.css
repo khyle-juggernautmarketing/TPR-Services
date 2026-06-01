@@ -1,0 +1,116 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    @apply overflow-x-hidden bg-slate-50 font-sans text-slate-800 antialiased;
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+
+  /* Prevent iOS zoom on form focus; restore smaller text on larger screens */
+  input,
+  select,
+  textarea {
+    font-size: max(16px, 1rem);
+  }
+
+  @media (min-width: 640px) {
+    input,
+    select,
+    textarea {
+      font-size: inherit;
+    }
+  }
+  ::selection {
+    background-color: rgba(37, 150, 190, 0.35);
+    color: #0f172a;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  @keyframes form-step-in {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  .animate-form-step {
+    animation: form-step-in 0.3s ease-out forwards;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .animate-form-step {
+      animation: none;
+    }
+  }
+
+  @keyframes form-success-pop {
+    from {
+      opacity: 0;
+      transform: scale(0.94);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+  .animate-form-success {
+    animation: form-success-pop 0.5s ease-out forwards;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .animate-form-success {
+      animation: none;
+    }
+  }
+
+  @keyframes check-stroke {
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+  .animate-check-stroke {
+    stroke-dasharray: 48;
+    stroke-dashoffset: 48;
+    animation: check-stroke 0.55s ease-out forwards 0.15s;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .animate-check-stroke {
+      stroke-dashoffset: 0;
+      animation: none;
+    }
+  }
+
+  @keyframes nav-link-in {
+    from {
+      opacity: 0;
+      transform: translateX(16px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+  .nav-mobile-link {
+    opacity: 0;
+    animation: nav-link-in 0.35s ease-out forwards;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .nav-mobile-link {
+      animation: none;
+      opacity: 1;
+    }
+  }
+}

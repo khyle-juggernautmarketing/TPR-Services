@@ -1,0 +1,12 @@
+node_modules/
+.next/
+.env.local
+.env*.local
+.DS_Store
+.vercel
+
+# Source art (copied into public/)
+/Logo.png
+/Hero Bg.png
+/Roof*
+/Favicon.svg
