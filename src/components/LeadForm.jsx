@@ -17,6 +17,9 @@ const HTML_TAG = /<[^>]*>/g
 const inputClass =
   'min-h-12 w-full rounded-xl border border-slate-200 bg-white px-4 text-base text-slate-800 placeholder:text-slate-400 focus:border-tpr-accent focus:outline-none focus:ring-2 focus:ring-tpr-accent/25 sm:text-sm'
 
+const formShellClass =
+  'rounded-2xl border border-white/20 bg-white shadow-2xl shadow-slate-950/25 backdrop-blur-md sm:p-8 p-6'
+
 const initialForm = {
   service: '',
   timeline: '',
@@ -58,18 +61,12 @@ function useStepAdvanceDelay() {
 
 function SuccessMarks() {
   return (
-    <svg className="h-28 w-28 text-tpr-accent" viewBox="0 0 64 64" aria-hidden>
-      <circle cx="32" cy="32" r="28" fill="rgba(37,150,190,0.15)" />
-      <path
-        className="animate-check-stroke"
-        stroke="currentColor"
-        strokeWidth="3.5"
-        fill="none"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="M18 34l8 8 20-22"
-      />
-    </svg>
+    <div
+      className="flex h-20 w-20 items-center justify-center rounded-full bg-tpr-accent/15 ring-4 ring-tpr-accent/25"
+      aria-hidden
+    >
+      <CheckCircle2 className="h-12 w-12 text-tpr-accent" strokeWidth={2} />
+    </div>
   )
 }
 
@@ -223,32 +220,36 @@ export function LeadForm() {
 
   if (status === 'success') {
     return (
-      <div className="animate-form-success flex min-h-[280px] flex-col items-center justify-center px-2 py-6 text-center">
-        <SuccessMarks />
-        <h3 className="mt-6 font-display text-xl font-bold text-slate-900">Request Received!</h3>
-        <p className="mt-2 max-w-sm text-slate-600">
-          Our team will reach out shortly. For urgent storm damage, call{' '}
-          <a
-            href={PHONE_PRIMARY_HREF}
-            className="font-semibold text-slate-900 underline decoration-tpr-accent underline-offset-2"
+      <div className={formShellClass} role="status" aria-live="polite">
+        <div className="animate-form-success flex min-h-[300px] flex-col items-center justify-center text-center">
+          <SuccessMarks />
+          <h3 className="mt-6 font-display text-2xl font-bold text-slate-900 sm:text-3xl">
+            Request Received!
+          </h3>
+          <p className="mt-3 max-w-sm text-base leading-relaxed text-slate-600">
+            Thank you — our team will reach out shortly. For urgent storm damage, call{' '}
+            <a
+              href={PHONE_PRIMARY_HREF}
+              className="font-semibold text-tpr-accent underline decoration-tpr-accent/50 underline-offset-2 hover:text-tpr-accent-dark"
+            >
+              {PHONE_PRIMARY}
+            </a>
+            .
+          </p>
+          <button
+            type="button"
+            onClick={() => setStatus('idle')}
+            className="mt-8 min-h-12 rounded-xl bg-tpr-accent px-8 text-sm font-bold text-white transition-all duration-300 ease-in-out hover:bg-tpr-accent-dark focus:outline-none focus:ring-2 focus:ring-tpr-accent/40 focus:ring-offset-2"
           >
-            {PHONE_PRIMARY}
-          </a>
-          .
-        </p>
-        <button
-          type="button"
-          onClick={() => setStatus('idle')}
-          className="mt-8 min-h-12 rounded-xl border-2 border-slate-200 px-6 text-sm font-bold text-slate-800 transition-all duration-300 ease-in-out hover:border-tpr-accent hover:bg-tpr-accent/10"
-        >
-          Submit another request
-        </button>
+            Submit another request
+          </button>
+        </div>
       </div>
     )
   }
 
   return (
-    <div className="rounded-2xl border border-slate-200/60 bg-white/90 p-6 shadow-xl backdrop-blur-md">
+    <div className={formShellClass}>
       <div className="mb-5 text-center">
         <h3 className="font-display text-lg font-bold text-slate-900 sm:text-xl">Get Your Free Quote</h3>
         <p className="mt-1 text-xs text-slate-500 sm:text-sm">Three quick steps — no obligation.</p>
