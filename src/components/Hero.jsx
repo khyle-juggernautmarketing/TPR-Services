@@ -1,9 +1,8 @@
 import { Check } from 'lucide-react'
 import Image from 'next/image'
-import { VALUE_PROPS } from '@/lib/constants'
+import { NAV_OFFSET, VALUE_PROPS } from '@/lib/constants'
 import { MEDIA } from '@/lib/media'
 import { LeadForm } from '@/components/LeadForm'
-import { NAV_OFFSET } from '@/components/Navbar'
 
 export function Hero() {
   return (

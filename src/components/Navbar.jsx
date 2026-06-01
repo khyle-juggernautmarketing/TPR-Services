@@ -177,5 +177,3 @@ export function Navbar() {
     </header>
   )
 }
-
-export const NAV_OFFSET = 'calc(2.5rem + 4.25rem)'

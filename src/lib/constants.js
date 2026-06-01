@@ -1,5 +1,8 @@
 export const BRAND_NAME = 'TPR Services'
 
+/** Fixed header height: announcement ribbon + main nav (matches Navbar layout) */
+export const NAV_OFFSET = 'calc(2.5rem + 4.25rem)'
+
 /** Logo / brand primary blue */
 export const BRAND_PRIMARY = '#2596BE'
 
