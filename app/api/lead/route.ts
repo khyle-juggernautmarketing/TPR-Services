@@ -1,15 +1,18 @@
 import { NextResponse } from 'next/server'
-import { isAllowedWebhookHost, isValidJwtSecret, isValidWebhookUrl, signJwtHS256 } from '@/lib/jwt'
-import { isRateLimited, rateLimitKey, sanitizeRequestMeta, validateLeadBody } from '@/lib/leadSecurity'
-import { isAllowedLeadRequest } from '@/lib/requestSecurity'
+import { formatAppointmentDisplay } from '@/lib/appointments'
 import { PHONE_PRIMARY } from '@/lib/constants'
+import {
+  isRateLimited,
+  rateLimitKey,
+  sanitizeRequestMeta,
+  validateLeadSubmission,
+} from '@/lib/leadSecurity'
+import { isAllowedLeadRequest } from '@/lib/requestSecurity'
+import { getLeadSession, reserveAppointmentSlot, updateLeadSession } from '@/lib/store'
+import { getWebhookConfig, postToWebhookWithRetry } from '@/lib/webhook'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
-
-const WEBHOOK_TIMEOUT_MS = 20_000
-const WEBHOOK_MAX_ATTEMPTS = 3
-const MAX_BODY_BYTES = 8_192
 
 const JSON_HEADERS = {
   'Content-Type': 'application/json',
@@ -17,67 +20,7 @@ const JSON_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
 }
 
-function getWebhookConfig() {
-  const url = process.env.N8N_WEBHOOK_URL?.trim()
-  const jwtSecret = process.env.N8N_JWT_SECRET?.trim()
-  if (!url || !jwtSecret) return null
-  if (!isValidWebhookUrl(url) || !isValidJwtSecret(jwtSecret) || !isAllowedWebhookHost(url)) {
-    return null
-  }
-  return { url, jwtSecret }
-}
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-async function postToWebhook(url: string, jwtSecret: string, payload: Record<string, unknown>) {
-  const token = signJwtHS256(jwtSecret, { sub: 'lead-form' })
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), WEBHOOK_TIMEOUT_MS)
-
-  try {
-    return await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json, text/plain, */*',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-      cache: 'no-store',
-    })
-  } finally {
-    clearTimeout(timeout)
-  }
-}
-
-async function postToWebhookWithRetry(url: string, jwtSecret: string, payload: Record<string, unknown>) {
-  let lastResponse: Response | null = null
-  let lastError: unknown = null
-
-  for (let attempt = 1; attempt <= WEBHOOK_MAX_ATTEMPTS; attempt++) {
-    try {
-      const res = await postToWebhook(url, jwtSecret, payload)
-      if (res.status >= 200 && res.status < 300) return res
-
-      lastResponse = res
-      if (res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429) {
-        return res
-      }
-    } catch (error) {
-      lastError = error
-    }
-
-    if (attempt < WEBHOOK_MAX_ATTEMPTS) {
-      await sleep(350 * attempt)
-    }
-  }
-
-  if (lastResponse) return lastResponse
-  throw lastError ?? new Error('Webhook unreachable')
-}
+const MAX_BODY_BYTES = 8_192
 
 export async function GET() {
   return NextResponse.json({ error: 'Method not allowed' }, { status: 405, headers: JSON_HEADERS })
@@ -128,14 +71,56 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Invalid JSON' }, { status: 400, headers: JSON_HEADERS })
     }
 
-    const validated = validateLeadBody(body)
+    const validated = await validateLeadSubmission(body)
     if (!validated.ok) {
       return NextResponse.json({ error: validated.error }, { status: 400, headers: JSON_HEADERS })
     }
 
-    const { service, timeline, name, email, phone, address, privacyAccepted } = validated.data
+    const {
+      leadSessionId,
+      submissionType,
+      appointmentStartMs,
+      service,
+      timeline,
+      name,
+      email,
+      phone,
+      address,
+      privacyAccepted,
+    } = validated.data
 
-    const payload = {
+    const session = await getLeadSession(leadSessionId)
+    if (!session) {
+      return NextResponse.json({ error: 'Session expired. Please start again.' }, { status: 400, headers: JSON_HEADERS })
+    }
+
+    if (session.webhookSent) {
+      return NextResponse.json({ ok: true, alreadySent: true }, { headers: JSON_HEADERS })
+    }
+
+    if (submissionType === 'form_only_timeout' && session.appointmentStartMs) {
+      return NextResponse.json({ ok: true, skipped: true }, { headers: JSON_HEADERS })
+    }
+
+    let bookedStartMs: number | null = null
+
+    if (submissionType === 'with_appointment') {
+      if (!appointmentStartMs) {
+        return NextResponse.json({ error: 'Appointment required' }, { status: 400, headers: JSON_HEADERS })
+      }
+
+      const reserved = await reserveAppointmentSlot(appointmentStartMs)
+      if (!reserved) {
+        return NextResponse.json(
+          { error: 'That time was just booked. Please choose another slot.' },
+          { status: 409, headers: JSON_HEADERS },
+        )
+      }
+      bookedStartMs = appointmentStartMs
+      session.appointmentStartMs = appointmentStartMs
+    }
+
+    const payload: Record<string, unknown> = {
       service,
       timeline,
       name,
@@ -146,9 +131,21 @@ export async function POST(request: Request) {
       privacyAccepted,
       consent: privacyAccepted,
       source: 'tpr-services-landing',
+      submissionType,
+      leadComplete: submissionType === 'with_appointment',
+      appointmentBooked: submissionType === 'with_appointment',
       submittedAt: new Date().toISOString(),
       referer: sanitizeRequestMeta(request.headers.get('referer')),
       userAgent: sanitizeRequestMeta(request.headers.get('user-agent')),
+      leadSessionId,
+    }
+
+    if (bookedStartMs) {
+      payload.appointmentStart = new Date(bookedStartMs).toISOString()
+      payload.appointmentStartMs = bookedStartMs
+      payload.appointmentDisplay = formatAppointmentDisplay(bookedStartMs)
+      payload.appointmentTimeZone = 'America/New_York'
+      payload.appointmentBlockMinutes = 90
     }
 
     if (process.env.NODE_ENV === 'development') {
@@ -172,7 +169,15 @@ export async function POST(request: Request) {
     }
 
     if (res.status >= 200 && res.status < 300) {
-      return NextResponse.json({ ok: true }, { headers: JSON_HEADERS })
+      session.webhookSent = true
+      await updateLeadSession(session)
+      return NextResponse.json(
+        {
+          ok: true,
+          appointmentDisplay: bookedStartMs ? formatAppointmentDisplay(bookedStartMs) : null,
+        },
+        { headers: JSON_HEADERS },
+      )
     }
 
     const errBody = await res.text().catch(() => '')

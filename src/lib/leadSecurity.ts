@@ -1,3 +1,5 @@
+import { isValidBookableStart } from '@/lib/appointments'
+import { getAppointmentBlocks } from '@/lib/store'
 import { SERVICES, TIMELINES } from '@/lib/formOptions'
 
 const MAX = {
@@ -19,6 +21,14 @@ export type LeadFormData = {
   phone: string
   address: string
   privacyAccepted: boolean
+}
+
+export type LeadSubmissionType = 'with_appointment' | 'form_only_timeout'
+
+export type ValidatedLeadSubmission = LeadFormData & {
+  leadSessionId: string
+  submissionType: LeadSubmissionType
+  appointmentStartMs: number | null
 }
 
 export function sanitizeText(value: unknown, maxLen: number): string {
@@ -88,6 +98,57 @@ export function validateLeadBody(body: unknown):
   return {
     ok: true,
     data: { service, timeline, name, email, phone, address, privacyAccepted },
+  }
+}
+
+export async function validateLeadSubmission(
+  body: unknown,
+): Promise<{ ok: true; data: ValidatedLeadSubmission } | { ok: false; error: string }> {
+  const base = validateLeadBody(body)
+  if (!base.ok) return base
+
+  if (!body || typeof body !== 'object') {
+    return { ok: false, error: 'Invalid request body' }
+  }
+
+  const raw = body as Record<string, unknown>
+  const leadSessionId = sanitizeText(raw.leadSessionId, 64)
+  const submissionType = sanitizeText(raw.submissionType, 32) as LeadSubmissionType
+
+  if (!leadSessionId) {
+    return { ok: false, error: 'Missing session' }
+  }
+
+  if (submissionType !== 'with_appointment' && submissionType !== 'form_only_timeout') {
+    return { ok: false, error: 'Invalid submission type' }
+  }
+
+  let appointmentStartMs: number | null = null
+  if (submissionType === 'with_appointment') {
+    const startRaw = raw.appointmentStart ?? raw.appointmentStartMs
+    if (typeof startRaw === 'string') {
+      appointmentStartMs = Date.parse(startRaw)
+    } else if (typeof startRaw === 'number') {
+      appointmentStartMs = startRaw
+    }
+    if (!appointmentStartMs || !Number.isFinite(appointmentStartMs)) {
+      return { ok: false, error: 'Please select an appointment time' }
+    }
+
+    const blocks = await getAppointmentBlocks()
+    if (!isValidBookableStart(appointmentStartMs, blocks)) {
+      return { ok: false, error: 'That appointment time is no longer available' }
+    }
+  }
+
+  return {
+    ok: true,
+    data: {
+      ...base.data,
+      leadSessionId,
+      submissionType,
+      appointmentStartMs,
+    },
   }
 }
 

@@ -1,17 +1,23 @@
 'use client'
 
 import { CheckCircle2, Loader2 } from 'lucide-react'
-import { useCallback, useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { AppointmentPicker } from '@/components/AppointmentPicker'
+import { PENDING_WEBHOOK_MS } from '@/lib/appointments'
 import { PRIVACY_CONSENT_TEXT, PHONE_PRIMARY, PHONE_PRIMARY_HREF } from '@/lib/constants'
 import { SERVICE_OPTIONS, TIMELINE_OPTIONS } from '@/lib/formOptions'
+
+const THANK_YOU_STORAGE_KEY = 'tpr_thank_you'
 
 const STEPS = [
   { id: 1, title: 'What service do you need?' },
   { id: 2, title: 'How quickly do you require dispatch services?' },
   { id: 3, title: 'Your contact details' },
+  { id: 4, title: 'Pick your appointment (Eastern Time)' },
 ]
 
-const TOTAL_STEPS = 3
+const TOTAL_STEPS = 4
 
 const HTML_TAG = /<[^>]*>/g
 const inputClass =
@@ -42,6 +48,9 @@ function parseApiError(body, status) {
   if (status === 429) {
     return `Too many requests. Please wait a few minutes or call ${PHONE_PRIMARY}.`
   }
+  if (status === 409) {
+    return body?.error || 'That time was just booked. Please choose another slot.'
+  }
   if (status >= 500) {
     return `Our booking system is temporarily unavailable. Please call ${PHONE_PRIMARY}.`
   }
@@ -57,17 +66,6 @@ function useStepAdvanceDelay() {
     return () => cancelAnimationFrame(id)
   }, [])
   return ms
-}
-
-function SuccessMarks() {
-  return (
-    <div
-      className="flex h-20 w-20 items-center justify-center rounded-full bg-tpr-accent/15 ring-4 ring-tpr-accent/25"
-      aria-hidden
-    >
-      <CheckCircle2 className="h-12 w-12 text-tpr-accent" strokeWidth={2} />
-    </div>
-  )
 }
 
 function IconOption({ opt, selected, onSelect }) {
@@ -99,14 +97,123 @@ function IconOption({ opt, selected, onSelect }) {
 }
 
 export function LeadForm() {
+  const router = useRouter()
   const [step, setStep] = useState(1)
   const [data, setData] = useState(initialForm)
   const [status, setStatus] = useState('idle')
   const [errorMsg, setErrorMsg] = useState('')
   const [honeypot, setHoneypot] = useState('')
+  const [leadSessionId, setLeadSessionId] = useState('')
+  const [appointmentDate, setAppointmentDate] = useState('')
+  const [appointmentStartMs, setAppointmentStartMs] = useState(null)
+  const [webhookSent, setWebhookSent] = useState(false)
   const stepAdvanceDelayMs = useStepAdvanceDelay()
+  const pendingTimerRef = useRef(null)
+  const webhookSentRef = useRef(false)
 
   const progress = (step / TOTAL_STEPS) * 100
+
+  const handleSelectDate = useCallback((d) => {
+    setAppointmentDate(d)
+    setAppointmentStartMs(null)
+    setErrorMsg('')
+  }, [])
+
+  const handleSelectSlot = useCallback((ms) => {
+    setAppointmentStartMs(ms)
+    setErrorMsg('')
+  }, [])
+
+  const buildPayload = useCallback(
+    (sanitized) => ({
+      service: data.service,
+      timeline: data.timeline,
+      name: sanitized.name,
+      email: sanitized.email,
+      phone: sanitized.phone,
+      address: sanitized.address,
+      privacyAccepted: data.privacyAccepted,
+      _hp: honeypot,
+    }),
+    [data, honeypot],
+  )
+
+  const sendLead = useCallback(
+    async (submissionType, appointmentStart) => {
+      const body = {
+        leadSessionId,
+        submissionType,
+        service: data.service,
+        timeline: data.timeline,
+        name: data.name,
+        email: data.email,
+        phone: data.phone,
+        address: data.address,
+        privacyAccepted: data.privacyAccepted,
+        _hp: honeypot,
+      }
+      if (submissionType === 'with_appointment' && appointmentStart) {
+        body.appointmentStart = new Date(appointmentStart).toISOString()
+      }
+
+      const res = await fetch('/api/lead', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify(body),
+        cache: 'no-store',
+        credentials: 'same-origin',
+      })
+
+      let parsed = null
+      const raw = await res.text()
+      if (raw) {
+        try {
+          parsed = JSON.parse(raw)
+        } catch {
+          parsed = null
+        }
+      }
+
+      return { ok: res.ok, status: res.status, body: parsed }
+    },
+    [leadSessionId, data, honeypot],
+  )
+
+  const clearPendingTimer = useCallback(() => {
+    if (pendingTimerRef.current) {
+      clearTimeout(pendingTimerRef.current)
+      pendingTimerRef.current = null
+    }
+  }, [])
+
+  const markWebhookSent = useCallback(() => {
+    webhookSentRef.current = true
+    setWebhookSent(true)
+    clearPendingTimer()
+  }, [clearPendingTimer])
+
+  const firePartialWebhook = useCallback(async () => {
+    if (webhookSentRef.current || !leadSessionId) return
+    try {
+      const result = await sendLead('form_only_timeout')
+      if (result.ok) markWebhookSent()
+    } catch {
+      /* silent — user may still book */
+    }
+  }, [leadSessionId, sendLead, markWebhookSent])
+
+  useEffect(() => {
+    if (step !== 4 || !leadSessionId || webhookSentRef.current) return
+
+    clearPendingTimer()
+    pendingTimerRef.current = setTimeout(() => {
+      firePartialWebhook()
+    }, PENDING_WEBHOOK_MS)
+
+    return clearPendingTimer
+  }, [step, leadSessionId, clearPendingTimer, firePartialWebhook])
+
+  useEffect(() => () => clearPendingTimer(), [clearPendingTimer])
 
   const selectService = useCallback(
     (service) => {
@@ -126,19 +233,16 @@ export function LeadForm() {
     [stepAdvanceDelayMs],
   )
 
-  const submit = async (e) => {
-    e.preventDefault()
-    setErrorMsg('')
-
+  const validateContact = () => {
     if (!data.service) {
       setErrorMsg('Please select a service.')
       setStep(1)
-      return
+      return null
     }
     if (!data.timeline) {
       setErrorMsg('Please select a timeline.')
       setStep(2)
-      return
+      return null
     }
 
     const name = sanitizeInput(data.name.trim())
@@ -148,47 +252,44 @@ export function LeadForm() {
 
     if (!name || !email || !phone || !address) {
       setErrorMsg('Please fill in all fields.')
-      return
+      return null
     }
     const phoneDigits = phone.replace(/\D/g, '')
     if (phoneDigits.length < 10) {
       setErrorMsg('Please enter a valid phone number.')
-      return
+      return null
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       setErrorMsg('Please enter a valid email.')
-      return
+      return null
     }
     if (address.length < 5) {
       setErrorMsg('Please enter a valid property address.')
-      return
+      return null
     }
     if (!data.privacyAccepted) {
       setErrorMsg('Please authorize contact to submit your request.')
-      return
+      return null
     }
 
-    const payload = {
-      service: data.service,
-      timeline: data.timeline,
-      name,
-      email,
-      phone,
-      address,
-      privacyAccepted: data.privacyAccepted,
-      _hp: honeypot,
-    }
+    return { name, email, phone, address }
+  }
 
-    if (process.env.NODE_ENV === 'development') {
-      console.debug('[LeadForm submit]', { ...payload, email: '[redacted]', phone: '[redacted]' })
-    }
+  const continueToCalendar = async (e) => {
+    e.preventDefault()
+    setErrorMsg('')
 
+    const sanitized = validateContact()
+    if (!sanitized) return
+
+    setData((d) => ({ ...d, ...sanitized }))
     setStatus('loading')
+
     try {
-      const res = await fetch('/api/lead', {
+      const res = await fetch('/api/lead/pending', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(buildPayload(sanitized)),
         cache: 'no-store',
         credentials: 'same-origin',
       })
@@ -209,50 +310,73 @@ export function LeadForm() {
         return
       }
 
-      setData(initialForm)
-      setStep(1)
-      setStatus('success')
+      setLeadSessionId(body.leadSessionId)
+      webhookSentRef.current = false
+      setWebhookSent(false)
+      setAppointmentDate('')
+      setAppointmentStartMs(null)
+      setStatus('idle')
+      setStep(4)
     } catch {
       setStatus('idle')
       setErrorMsg(`Network error. Please try again or call ${PHONE_PRIMARY}.`)
     }
   }
 
-  if (status === 'success') {
-    return (
-      <div className={formShellClass} role="status" aria-live="polite">
-        <div className="animate-form-success flex min-h-[300px] flex-col items-center justify-center text-center">
-          <SuccessMarks />
-          <h3 className="mt-6 font-display text-2xl font-bold text-slate-900 sm:text-3xl">
-            Request Received!
-          </h3>
-          <p className="mt-3 max-w-sm text-base leading-relaxed text-slate-600">
-            Thank you — our team will reach out shortly. For urgent storm damage, call{' '}
-            <a
-              href={PHONE_PRIMARY_HREF}
-              className="font-semibold text-tpr-accent underline decoration-tpr-accent/50 underline-offset-2 hover:text-tpr-accent-dark"
-            >
-              {PHONE_PRIMARY}
-            </a>
-            .
-          </p>
-          <button
-            type="button"
-            onClick={() => setStatus('idle')}
-            className="mt-8 min-h-12 rounded-xl bg-tpr-accent px-8 text-sm font-bold text-white transition-all duration-300 ease-in-out hover:bg-tpr-accent-dark focus:outline-none focus:ring-2 focus:ring-tpr-accent/40 focus:ring-offset-2"
-          >
-            Submit another request
-          </button>
-        </div>
-      </div>
-    )
+  const confirmAppointment = async () => {
+    setErrorMsg('')
+
+    if (!appointmentStartMs) {
+      setErrorMsg('Please select a date and time for your appointment.')
+      return
+    }
+
+    setStatus('loading')
+    try {
+      const result = await sendLead('with_appointment', appointmentStartMs)
+
+      if (!result.ok) {
+        setStatus('idle')
+        setErrorMsg(parseApiError(result.body, result.status))
+        if (result.status === 409) setAppointmentStartMs(null)
+        return
+      }
+
+      markWebhookSent()
+
+      const display = result.body?.appointmentDisplay ?? null
+      try {
+        sessionStorage.setItem(
+          THANK_YOU_STORAGE_KEY,
+          JSON.stringify({
+            name: data.name,
+            appointmentDisplay: display,
+          }),
+        )
+      } catch {
+        /* ignore */
+      }
+
+      setData(initialForm)
+      setStep(1)
+      setLeadSessionId('')
+      setAppointmentDate('')
+      setAppointmentStartMs(null)
+      setStatus('idle')
+      router.push('/thank-you')
+    } catch {
+      setStatus('idle')
+      setErrorMsg(`Network error. Please try again or call ${PHONE_PRIMARY}.`)
+    }
   }
 
   return (
     <div className={formShellClass}>
       <div className="mb-5 text-center">
         <h3 className="font-display text-lg font-bold text-slate-900 sm:text-xl">Get Your Free Quote</h3>
-        <p className="mt-1 text-xs text-slate-500 sm:text-sm">Three quick steps — no obligation.</p>
+        <p className="mt-1 text-xs text-slate-500 sm:text-sm">
+          {step < 4 ? 'Three quick steps — then pick a time.' : 'Choose your preferred visit window.'}
+        </p>
       </div>
 
       <div className="mb-5 h-1.5 overflow-hidden rounded-full bg-slate-200">
@@ -297,7 +421,7 @@ export function LeadForm() {
         )}
 
         {step === 3 && (
-          <form onSubmit={submit} className="space-y-3">
+          <form onSubmit={continueToCalendar} className="space-y-3">
             <label className="sr-only" aria-hidden>
               Website
               <input
@@ -377,17 +501,58 @@ export function LeadForm() {
               {status === 'loading' ? (
                 <>
                   <Loader2 className="h-5 w-5 animate-spin" aria-hidden />
-                  Sending...
+                  Saving…
                 </>
               ) : (
-                'Submit Free Quote Request'
+                'Continue to schedule appointment'
               )}
             </button>
           </form>
         )}
+
+        {step === 4 && (
+          <div className="space-y-4">
+            <AppointmentPicker
+              selectedDate={appointmentDate}
+              selectedStartMs={appointmentStartMs}
+              onSelectDate={handleSelectDate}
+              onSelectSlot={handleSelectSlot}
+              disabled={status === 'loading'}
+            />
+            {errorMsg && (
+              <p className="text-sm text-red-600" role="alert">
+                {errorMsg}
+              </p>
+            )}
+            {webhookSent && (
+              <p className="text-xs text-slate-500">
+                Your details were sent. Select a time to confirm your visit, or call{' '}
+                <a href={PHONE_PRIMARY_HREF} className="font-semibold text-tpr-accent">
+                  {PHONE_PRIMARY}
+                </a>
+                .
+              </p>
+            )}
+            <button
+              type="button"
+              disabled={status === 'loading' || !appointmentStartMs}
+              onClick={confirmAppointment}
+              className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-tpr-accent text-sm font-bold text-white transition-all duration-300 ease-in-out hover:bg-tpr-accent-dark disabled:opacity-70"
+            >
+              {status === 'loading' ? (
+                <>
+                  <Loader2 className="h-5 w-5 animate-spin" aria-hidden />
+                  Confirming…
+                </>
+              ) : (
+                'Confirm appointment'
+              )}
+            </button>
+          </div>
+        )}
       </div>
 
-      {errorMsg && step !== 3 && (
+      {errorMsg && step !== 3 && step !== 4 && (
         <p className="mt-3 text-sm text-red-600" role="alert">
           {errorMsg}
         </p>
@@ -399,6 +564,7 @@ export function LeadForm() {
             type="button"
             onClick={() => {
               setErrorMsg('')
+              if (step === 4) clearPendingTimer()
               setStep((s) => Math.max(1, s - 1))
             }}
             className="flex min-h-12 items-center text-sm font-semibold text-slate-600 transition-colors duration-300 hover:text-slate-900"
